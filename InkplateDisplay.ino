@@ -1,7 +1,13 @@
-#include "Inkplate.h"               //Include Inkplate library to the sketch
+#include <Adafruit_MCP23017.h>
+#include <Adafruit_SPITFT_Macros.h>
+#include <Adafruit_SPITFT.h>
+#include <Adafruit_GFX.h>
+#include <gfxfont.h>
+#include <Inkplate.h>
+
 #include "driver/rtc_io.h"                          //ESP32 library used for deep sleep and RTC wake up pins
 #include "WiFi.h"                   //Include library for WiFi
-#include "../../wlan-credentials/credentials.h"
+#include "credentials.h"
 #include "PubSubClient.h"
 #include <ESP32_FTPClient.h>
 // patched ESP32_FTPClient.h lines 132 and 205: removed "timeout" parameter from connect call
@@ -56,7 +62,7 @@ struct Power {
 RTC_DATA_ATTR char powerday[16];
 RTC_DATA_ATTR Power production;
 RTC_DATA_ATTR Power consumption;
-RTC_DATA_ATTR char station[5][25];
+RTC_DATA_ATTR char station[5][64];
 RTC_DATA_ATTR char motd[2][256];
 RTC_DATA_ATTR unsigned long menuLevel;
 
@@ -79,11 +85,10 @@ Adafruit_Sensor *bme_humidity = bme.getHumiditySensor();
 void error (const char* aMessage)
 {
   Serial.println (aMessage);
-  display.clearDisplay(); //Clear frame buffer of display
-  display.display();      //Put clear image on display
-  display.setTextSize(5);
+  display.setTextSize(3);
+  display.setCursor(0, 200);
   display.print(aMessage);
-  display.partialUpdate();
+  display.display();      //Put warning on display
 }
 
 void drawLine (uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16_t w = 1, uint16_t color = lineColor)
@@ -155,12 +160,24 @@ void printSingleSmiley (int aX, int aY, int aRadius, smileKind aSmile)
 
 void updateClock()
 {
+  struct tm* time = getTime();
   char charBuf[32];
-  strftime(charBuf, sizeof(charBuf), "%H:%M", getTime());
-  printAt (0, 10, &FreeSans24pt7b, charBuf, 3, CenterAlign, 400);
+  strftime(charBuf, sizeof(charBuf), "%H:%M", time);
+  printAt (0, 10, &FreeSans24pt7b, charBuf, 3, CenterAlign, 380);
 
-  strftime(charBuf, sizeof(charBuf), "%A, %d.%m.%Y", getTime());
-  printAt (0, 129, &FreeSans18pt7b, charBuf, 1, CenterAlign, 400);
+  strftime(charBuf, sizeof(charBuf), "%d.%m.%Y", time);
+  String date;
+  switch (time->tm_wday) {
+    case 0: date = "Sonntag, "; break;
+    case 1: date = "Montag, "; break;
+    case 2: date = "Dienstag, "; break;
+    case 3: date = "Mittwoch, "; break;
+    case 4: date = "Donnerstag, "; break;
+    case 5: date = "Freitag, "; break;
+    case 6: date = "Samstag, "; break;
+  }
+  date += charBuf;
+  printAt (0, 129, &FreeSans18pt7b, date.c_str(), 1, CenterAlign, 400);
   drawLine(0, 179, 400, 179, lineWidth);
   drawLine(399, 0, 399, 180, lineWidth);
 }
@@ -182,7 +199,7 @@ void updateStatus(bool statusWLAN, bool statusMQTT, int buttons)
   if (buttons & 4 == 4) buttonMarker (3);
 
   char charBuf[32];
-  double battery = 100.0 * display.readBattery() - 300.0;
+  double battery = 125.0 * display.readBattery() - 375.0;
   snprintf (charBuf, sizeof (charBuf), "Batterie: %3.0f%%", battery);
   printAt (602, offsetY + 6, &FreeSans12pt7b, charBuf);
   drawLine(0, offsetY, 800, offsetY, lineWidth);
@@ -255,11 +272,11 @@ void showPower ()
 
 void showStation ()
 {
-  int height = 44;
+  int height = 35;
   int offsetX = 410;
-  int offsetY = 5;
+  int offsetY = 8;
   for (int i = 0; i < 5; ++i)
-  printAt (offsetX, offsetY + i * height, &FreeSans18pt7b, station[i]);
+  printAt (offsetX, offsetY + i * height, &FreeSans12pt7b, station[i]);
   drawLine(400, 179, 800, 179, lineWidth);
 }
 
@@ -338,6 +355,18 @@ int splitPayload (const String& aPayload, String aParts[5])
   do {
     aParts[parts] = "";
     while (index < aPayload.length() && aPayload[index] != '@') {
+      if (aPayload[index] == 0xc3) {
+        ++index;
+        switch (aPayload[index]) {
+          case 0xa4: aParts[parts] += "ae"; break;
+          case 0xb6: aParts[parts] += "oe"; break;
+          case 0xbc: aParts[parts] += "ue"; break;
+          case 0x9f: aParts[parts] += "sz"; break;
+          case 0x84: aParts[parts] += "Ae"; break;
+          case 0x96: aParts[parts] += "Oe"; break;
+          case 0x9c: aParts[parts] += "Ue"; break;
+        }
+      }
       if (aPayload[index] != '\n') aParts[parts] += aPayload[index];
       ++index;
     }
@@ -392,8 +421,9 @@ void handleStation (const String& aPayload)
 {
   String parsed[5];
   int parts = splitPayload (aPayload, parsed);
-  for (int i = 0; i < 5; ++i)
+  for (int i = 0; i < parts; ++i) {
     strncpy (station[i], parsed[i].c_str(), sizeof (station[i]));
+  }
 }
 
 void handleMOTD (const String& aPayload)
@@ -418,7 +448,6 @@ void mqttCallback (char* aTopic, byte* aPayload, unsigned int aLength)
   }
   if (strcmp (aTopic, "/inkplate/in/dataupdate") == 0) {
     dataUpdateInClockUpdates = payload.toInt();
-Serial.print ("dataUpdateInClockUpdates"); Serial.println (dataUpdateInClockUpdates);
   }
   if (strcmp (aTopic, "/inkplate/in/wlan-on") == 0) {
     wlanOnTime = (payload.substring(0, 2).toInt() * 60 + payload.substring(3, 5).toInt()) * 60;
@@ -490,26 +519,27 @@ void setup() {
   char charBuf[32];
   bool newMenuLevel = false;
 
+Serial.print ("cTCU: "); Serial.print (cyclesTillClockUpdate);
+Serial.print (" // cTDU: "); Serial.print (cyclesTillDataUpdate);
+Serial.print (" // b: "); Serial.print (buttons);
+
   bool firstStart = false;
   time_t now;
   time(&now);
+Serial.print (" // now: "); Serial.print ((long) now);
   if ((long) now < 86400) {
     firstStart = true;
     menuLevel = 0;
     newMenuLevel = true;
     cyclesTillFullUpdate = 0;
   }
+Serial.print (" // fS: "); Serial.println (firstStart);
 
   bool bme280initialized = true;
   if (!bme.begin(0x76)) {
     Serial.println(F("Could not find a valid BME280 sensor, check wiring!"));
     bme280initialized = false;
   }
-
-Serial.println (cyclesTillClockUpdate);
-Serial.println (cyclesTillDataUpdate);
-Serial.println (buttons);
-Serial.println (firstStart);
 
   if ((cyclesTillClockUpdate == 0) 
      || (cyclesTillDataUpdate == 0) 
@@ -521,6 +551,7 @@ Serial.println (firstStart);
 
     if ((!firstStart) && (buttons == 0) && (cyclesTillDataUpdate != 0))   // wake-up reason was clock update
     {
+Serial.println ("do clock");
       --cyclesTillDataUpdate;
       if (cyclesTillDataUpdate < 0) cyclesTillDataUpdate = 0;
       updateStatus(false, false, 0);
@@ -544,9 +575,11 @@ Serial.println (firstStart);
         strncpy (indoor.modTime, charBuf, sizeof (indoor.modTime));
       }
     } else if ((!firstStart) && (buttons == 5)) {   // easter egg
+Serial.println ("easter egg");
       printSmiley (400, 380, 120, Smile, 3);
       hideNormalContent = true;
     } else {   // handle pressed buttons or initial startup
+Serial.println ("do buttons or initial");
       cyclesTillDataUpdate = dataUpdateInClockUpdates;
       bool statusWLAN = false;
       bool statusMQTT = false;
@@ -570,6 +603,7 @@ Serial.println (firstStart);
       int now_s = (now->tm_hour * 60 + now->tm_min) * 60;
       if (firstStart || (getButtons() == 7) || ((now_s >= wlanOnTime) && ( now_s < wlanOffTime)))
       {
+Serial.println ("WiFi on");
         //Connect to the WiFi network.
         WiFi.mode(WIFI_MODE_STA);
         WiFi.begin(ssid, password);
@@ -613,6 +647,7 @@ Serial.println (firstStart);
 
           client.setServer(MQTT_BROKER, 1883);
           client.setCallback(mqttCallback);
+          client.setBufferSize(1024);
 
           maxTries = 10;
           while (!client.connected()) {
@@ -655,7 +690,7 @@ Serial.println (firstStart);
               client.publish ("/inkplate/out/menulevel", charBuf);
             }
 
-            maxTries = 100;
+            maxTries = 40;
             while (maxTries > 0) {
               client.loop();
               delay(50);
@@ -663,8 +698,10 @@ Serial.println (firstStart);
             }
           }   // MQTT OK
         }   // WLAN OK
+        WiFi.mode(WIFI_OFF);
+        Serial.println ("WiFi off");
       }   // correct time slot for WLAN
-//      updateStatus(statusWLAN, statusMQTT, buttons);
+      updateStatus(statusWLAN, statusMQTT, buttons);
     }
     updateClock();
     if (!hideNormalContent) {
@@ -683,15 +720,13 @@ Serial.print ("cyclesTillFullUpdate"); Serial.println(cyclesTillFullUpdate);
       display.partialUpdate();          //Do partial update
       --cyclesTillFullUpdate;
     }
-
-    rtc_gpio_isolate(GPIO_NUM_12);                                       //Isolate/disable GPIO12 on ESP32 (only to reduce power consumption in sleep)
-    if (display.readBattery() < 3.01) {   // nominal discharge cut-off voltage is 3.0V
-      error("Batterie alle!");
-      secondsTillWakeUp = 14 * 24 * 60 * 60;         //Sleep for 2 weeks to avoid deep discharge
-    }  
   }
   
-  WiFi.mode(WIFI_OFF);
+  rtc_gpio_isolate(GPIO_NUM_12);                                       //Isolate/disable GPIO12 on ESP32 (only to reduce power consumption in sleep)
+  if (display.readBattery() < 3.01) {   // nominal discharge cut-off voltage is 3.0V
+    error("Batterie alle!");
+    secondsTillWakeUp = 14 * 24 * 60 * 60;         //Sleep for 2 weeks to avoid deep discharge
+  }  
   Serial.print ("=== Sleeping for ");
   Serial.println (secondsTillWakeUp);
   esp_sleep_enable_timer_wakeup(secondsTillWakeUp * uS_TO_S_FACTOR);     //Activate wake-up timer
