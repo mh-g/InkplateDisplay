@@ -38,9 +38,7 @@ enum smileKind {
 };
 
 #define uS_TO_S_FACTOR 1000000
-RTC_DATA_ATTR int padCheckTime = 2;  // 1.6s till startup, so any value less than 1.6s will not work correctly
 RTC_DATA_ATTR int clockUpdateInSeconds = 60;
-RTC_DATA_ATTR int cyclesTillClockUpdate;
 RTC_DATA_ATTR int dataUpdateInClockUpdates = 5;
 RTC_DATA_ATTR int cyclesTillDataUpdate;
 RTC_DATA_ATTR int cyclesTillFullUpdate;
@@ -158,12 +156,36 @@ void printSingleSmiley (int aX, int aY, int aRadius, smileKind aSmile)
     display.drawCircle(aX, aY, aRadius - r, lineColor);
 }
 
+struct tm* getTime(time_t offset = 0) {
+  time_t now;
+  time(&now);
+  Serial.println(now);
+  now += offset;
+  Serial.println(now);
+  setenv("TZ", "CET", 1);
+  tzset();
+  return localtime (&now);
+}
+
 void updateClock()
 {
-  struct tm* time = getTime();
   char charBuf[32];
-  strftime(charBuf, sizeof(charBuf), "%H:%M", time);
-  printAt (0, 10, &FreeSans24pt7b, charBuf, 3, CenterAlign, 380);
+  struct tm* time;
+  int minsTillUpdate = clockUpdateInSeconds / 60;
+  if (minsTillUpdate > 1)
+  {
+    time = getTime (60 * (minsTillUpdate - 1));
+    strftime(charBuf, sizeof(charBuf), "%H:%M", time);
+    printAt (0, 50, &FreeSans24pt7b, charBuf, 2, CenterAlign, 380);
+    time = getTime ();
+    strftime(charBuf, sizeof(charBuf), "%H:%M -", time);
+    printAt (0, 10, &FreeSans18pt7b, charBuf, 1, CenterAlign, 380);
+  } else
+  {
+    time = getTime();
+    strftime(charBuf, sizeof(charBuf), "%H:%M", time);
+    printAt (0, 10, &FreeSans24pt7b, charBuf, 3, CenterAlign, 380);
+  }
 
   strftime(charBuf, sizeof(charBuf), "%d.%m.%Y", time);
   String date;
@@ -193,10 +215,10 @@ void updateStatus(bool statusWLAN, bool statusMQTT, int buttons)
   int offsetY = 567;
   printAt (2, offsetY + 3, &FreeSans12pt7b, statusWLAN ? "WLAN" : "----");
   printAt (102, offsetY + 3, &FreeSans12pt7b, statusMQTT ? "Daten" : "----");
-  
-  if (buttons & 1 == 1) buttonMarker (1);
-  if (buttons & 2 == 2) buttonMarker (2);
-  if (buttons & 4 == 4) buttonMarker (3);
+
+  if ((buttons & 1) == 1) buttonMarker (1);
+  if ((buttons & 2) == 2) buttonMarker (2);
+  if ((buttons & 4) == 4) buttonMarker (3);
 
   char charBuf[32];
   double battery = 125.0 * display.readBattery() - 375.0;
@@ -437,14 +459,8 @@ void handleMOTD (const String& aPayload)
 void mqttCallback (char* aTopic, byte* aPayload, unsigned int aLength)
 {
   String payload ((const char*) aPayload); payload = payload.substring (0, aLength);
-  if (strcmp (aTopic, "/inkplate/in/padchecktime") == 0) {
-    padCheckTime = payload.toInt();
-    if (padCheckTime < 2) padCheckTime = 2;
-    if (clockUpdateInSeconds < padCheckTime) clockUpdateInSeconds = padCheckTime;
-  }
   if (strcmp (aTopic, "/inkplate/in/clockupdate") == 0) {
     clockUpdateInSeconds = payload.toInt();
-    if (clockUpdateInSeconds < padCheckTime) clockUpdateInSeconds = padCheckTime;
   }
   if (strcmp (aTopic, "/inkplate/in/dataupdate") == 0) {
     dataUpdateInClockUpdates = payload.toInt();
@@ -499,41 +515,22 @@ int getButtons() {
   return buttons;
 }
 
-struct tm* getTime() {
-  time_t now;
-  time(&now);
-  setenv("TZ", "CET", 1);
-  tzset();
-  return localtime (&now);
-}
-
 void setup() {
   Serial.begin(2000000);
   display.begin();        // Init Inkplate library (you should call this function ONLY ONCE AT THE BEGINNING!)
   int buttons = getButtons();
-  int cyclesBetweenClockUpdates = clockUpdateInSeconds / padCheckTime;
-  if (cyclesTillClockUpdate > cyclesBetweenClockUpdates) cyclesTillClockUpdate = cyclesBetweenClockUpdates;
-  --cyclesTillClockUpdate;
-  if (cyclesTillClockUpdate < 0) cyclesTillClockUpdate = 0;
-  double secondsTillWakeUp = padCheckTime - 1.6;
+  double secondsTillWakeUp = clockUpdateInSeconds - 1.6;
   char charBuf[32];
   bool newMenuLevel = false;
-
-Serial.print ("cTCU: "); Serial.print (cyclesTillClockUpdate);
-Serial.print (" // cTDU: "); Serial.print (cyclesTillDataUpdate);
-Serial.print (" // b: "); Serial.print (buttons);
-
   bool firstStart = false;
   time_t now;
   time(&now);
-Serial.print (" // now: "); Serial.print ((long) now);
   if ((long) now < 86400) {
     firstStart = true;
     menuLevel = 0;
     newMenuLevel = true;
     cyclesTillFullUpdate = 0;
   }
-Serial.print (" // fS: "); Serial.println (firstStart);
 
   bool bme280initialized = true;
   if (!bme.begin(0x76)) {
@@ -541,17 +538,10 @@ Serial.print (" // fS: "); Serial.println (firstStart);
     bme280initialized = false;
   }
 
-  if ((cyclesTillClockUpdate == 0) 
-     || (cyclesTillDataUpdate == 0) 
-     || (buttons != 0)
-     || firstStart) {
-
-    cyclesTillClockUpdate = cyclesBetweenClockUpdates;
     bool hideNormalContent = false;
 
     if ((!firstStart) && (buttons == 0) && (cyclesTillDataUpdate != 0))   // wake-up reason was clock update
     {
-Serial.println ("do clock");
       --cyclesTillDataUpdate;
       if (cyclesTillDataUpdate < 0) cyclesTillDataUpdate = 0;
       updateStatus(false, false, 0);
@@ -575,11 +565,9 @@ Serial.println ("do clock");
         strncpy (indoor.modTime, charBuf, sizeof (indoor.modTime));
       }
     } else if ((!firstStart) && (buttons == 5)) {   // easter egg
-Serial.println ("easter egg");
       printSmiley (400, 380, 120, Smile, 3);
       hideNormalContent = true;
     } else {   // handle pressed buttons or initial startup
-Serial.println ("do buttons or initial");
       cyclesTillDataUpdate = dataUpdateInClockUpdates;
       bool statusWLAN = false;
       bool statusMQTT = false;
@@ -603,7 +591,6 @@ Serial.println ("do buttons or initial");
       int now_s = (now->tm_hour * 60 + now->tm_min) * 60;
       if (firstStart || (getButtons() == 7) || ((now_s >= wlanOnTime) && ( now_s < wlanOffTime)))
       {
-Serial.println ("WiFi on");
         //Connect to the WiFi network.
         WiFi.mode(WIFI_MODE_STA);
         WiFi.begin(ssid, password);
@@ -712,7 +699,6 @@ Serial.println ("WiFi on");
       showMOTD();
     }
 
-Serial.print ("cyclesTillFullUpdate"); Serial.println(cyclesTillFullUpdate);
     if (cyclesTillFullUpdate == 0) {
       display.display();   // update display
       cyclesTillFullUpdate = 20;
@@ -720,7 +706,22 @@ Serial.print ("cyclesTillFullUpdate"); Serial.println(cyclesTillFullUpdate);
       display.partialUpdate();          //Do partial update
       --cyclesTillFullUpdate;
     }
-  }
+    while (getButtons() != 0) {
+      delay (50);
+    }
+
+  #define touchPadPin1 10
+  #define touchPadPin2 11
+  #define touchPadPin3 12
+
+  display.pinModeMCP(touchPadPin1, INPUT);
+  display.pinModeMCP(touchPadPin2, INPUT);
+  display.pinModeMCP(touchPadPin3, INPUT);
+  display.setIntOutput(1, true, true, HIGH);
+  display.setIntPin(touchPadPin1, RISING);
+  display.setIntPin(touchPadPin2, RISING);
+  display.setIntPin(touchPadPin3, RISING);
+  
   
   rtc_gpio_isolate(GPIO_NUM_12);                                       //Isolate/disable GPIO12 on ESP32 (only to reduce power consumption in sleep)
   if (display.readBattery() < 3.01) {   // nominal discharge cut-off voltage is 3.0V
@@ -729,6 +730,7 @@ Serial.print ("cyclesTillFullUpdate"); Serial.println(cyclesTillFullUpdate);
   }  
   Serial.print ("=== Sleeping for ");
   Serial.println (secondsTillWakeUp);
+  esp_sleep_enable_ext0_wakeup(GPIO_NUM_34, 1);  // wake up from pads (via GPIO34)
   esp_sleep_enable_timer_wakeup(secondsTillWakeUp * uS_TO_S_FACTOR);     //Activate wake-up timer
   esp_deep_sleep_start();                                           //Put ESP32 into deep sleep. Program stops here.
 }
