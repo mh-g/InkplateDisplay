@@ -49,7 +49,7 @@ struct Env {
   char pressure[8];
   char humidity[6];
   char battery[5];
-  char modTime[7];
+  char modTime[13];
 };
 RTC_DATA_ATTR Env indoor;
 RTC_DATA_ATTR Env outdoor;
@@ -63,6 +63,7 @@ RTC_DATA_ATTR Power consumption;
 RTC_DATA_ATTR char station[5][64];
 RTC_DATA_ATTR char motd[2][256];
 RTC_DATA_ATTR unsigned long menuLevel;
+double correctedBattery;
 
 WiFiClient espClient;
 PubSubClient client(espClient);
@@ -159,9 +160,7 @@ void printSingleSmiley (int aX, int aY, int aRadius, smileKind aSmile)
 struct tm* getTime(time_t offset = 0) {
   time_t now;
   time(&now);
-  Serial.println(now);
   now += offset;
-  Serial.println(now);
   setenv("TZ", "CET", 1);
   tzset();
   return localtime (&now);
@@ -206,7 +205,6 @@ void updateClock()
 
 void buttonMarker (int aNumber)
 {
-//  display.fillRoundRect (100 + 133 * aNumber, 570, 70, 60, 17, buttonColor);
   display.fillRoundRect (120 + 133 * aNumber, 590, 30, 20, 17, buttonColor);
 }
 
@@ -221,7 +219,7 @@ void updateStatus(bool statusWLAN, bool statusMQTT, int buttons)
   if ((buttons & 4) == 4) buttonMarker (3);
 
   char charBuf[32];
-  double battery = 125.0 * display.readBattery() - 375.0;
+  double battery = 125.0 * correctedBattery - 375.0;
   snprintf (charBuf, sizeof (charBuf), "Batterie: %3.0f%%", battery);
   printAt (602, offsetY + 6, &FreeSans12pt7b, charBuf);
   drawLine(0, offsetY, 800, offsetY, lineWidth);
@@ -238,10 +236,10 @@ void showEnv (int aWhich)
   if (aWhich == 0) env = outdoor;
   else if (aWhich == 1) env = indoor;
 
-  String where = (aWhich == 0) ? "Aussen   (" : "Innen   (";
+  String where = (aWhich == 0) ? "Aussen (" : "Innen (";
   where += env.modTime + String(")");
 
-  printAt (width * aWhich, offsetY + 5, &FreeSans9pt7b, where.c_str(), 1, CenterAlign, width);
+  printAt (width * aWhich, offsetY + 5, &FreeSans12pt7b, where.c_str(), 1, CenterAlign, width);
   
   printAt (width * aWhich + offsetX, height + offsetY, &FreeSans24pt7b, env.temperature, 2, RightAlign);
   printAt (width * aWhich + offsetX + gapX, height + offsetY + 18, &FreeSans18pt7b, " C", 2);
@@ -271,7 +269,7 @@ void showPower ()
   String message = "Strom   (";
   message += powerday;
   message += ")";
-  printAt (2 * width, offsetY + 5, &FreeSans9pt7b, message.c_str(), 1, CenterAlign, width);
+  printAt (2 * width, offsetY + 5, &FreeSans12pt7b, message.c_str(), 1, CenterAlign, width);
 
   printAt (2 * width, height + offsetY, &FreeSans9pt7b, "Bezug:");
   printAt (2 * width + offsetX, height + offsetY, &FreeSans18pt7b, consumption.power, 1, RightAlign);
@@ -343,6 +341,7 @@ bool showAnyContent(unsigned long menuLevel, unsigned char which)
   //Dynamically allocate buffer, enough for 24bit BMP incl. header
   unsigned char* downloaded_file = (unsigned char*) malloc(ftp_filesize);
   if (downloaded_file == NULL) return false;
+  Serial.println(ftp_filename.c_str());
   if (which == 0)
     ftp_c.DownloadFile(ftp_filename.c_str(), downloaded_file, ftp_filesize, false);
   else
@@ -369,7 +368,15 @@ bool showMenuIcons(unsigned long menuLevel)
 {
   return showAnyContent(menuLevel, 1);
 }
-            
+
+void showDefaultMenuIcons()
+{
+  int offsetY = 567;
+  printAt (83 + 133 * 1, offsetY + 3, &FreeSans12pt7b, "[Wetter]", 1, CenterAlign, 100);
+  printAt (83 + 133 * 2, offsetY + 3, &FreeSans12pt7b, "[aktualisieren]", 1, CenterAlign, 100);
+  printAt (83 + 133 * 3, offsetY + 3, &FreeSans12pt7b, "[Strom]", 1, CenterAlign, 100);
+}
+
 int splitPayload (const String& aPayload, String aParts[5])
 {
   int parts = 0;
@@ -531,6 +538,7 @@ void setup() {
     newMenuLevel = true;
     cyclesTillFullUpdate = 0;
   }
+  correctedBattery = display.readBattery();
 
   bool bme280initialized = true;
   if (!bme.begin(0x76)) {
@@ -548,7 +556,7 @@ void setup() {
       menuLevel /= 10;
       newMenuLevel = true;
       
-      dtostrf(display.readBattery(), 4, 2, charBuf);
+      dtostrf(correctedBattery, 4, 2, charBuf);
       strncpy (indoor.battery, charBuf, sizeof (indoor.battery));
       
       if (bme280initialized) {
@@ -561,7 +569,7 @@ void setup() {
         dtostrf(bme.readHumidity(), 4, 1, charBuf);
         strncpy (indoor.humidity, charBuf, sizeof (indoor.humidity));
         
-        strftime(charBuf, sizeof(charBuf), "%H:%M", getTime());
+        strftime(charBuf, sizeof(charBuf), "%d.%m. %H:%M", getTime());
         strncpy (indoor.modTime, charBuf, sizeof (indoor.modTime));
       }
     } else if ((!firstStart) && (buttons == 5)) {   // easter egg
@@ -589,7 +597,7 @@ void setup() {
       // only try update, if WLAN is turned on
       struct tm* now = getTime();
       int now_s = (now->tm_hour * 60 + now->tm_min) * 60;
-      if (firstStart || (getButtons() == 7) || ((now_s >= wlanOnTime) && ( now_s < wlanOffTime)))
+      if (firstStart || (getButtons() == 7) || ((now_s >= wlanOnTime) && (now_s < wlanOffTime)))
       {
         //Connect to the WiFi network.
         WiFi.mode(WIFI_MODE_STA);
@@ -650,7 +658,7 @@ void setup() {
             client.subscribe("/inkplate/in/#");
             client.publish ("/inkplate/out/reset", "RST");
             char charBuf[32];
-            dtostrf(display.readBattery(), 4, 2, charBuf);
+            dtostrf(correctedBattery, 4, 2, charBuf);
             client.publish ("/inkplate/out/battery", charBuf);
             strncpy (indoor.battery, charBuf, sizeof (indoor.battery));
 
@@ -697,6 +705,7 @@ void setup() {
       showPower();
       showStation();
       showMOTD();
+      showDefaultMenuIcons();
     }
 
     if (cyclesTillFullUpdate == 0) {
@@ -713,7 +722,6 @@ void setup() {
   #define touchPadPin1 10
   #define touchPadPin2 11
   #define touchPadPin3 12
-
   display.pinModeMCP(touchPadPin1, INPUT);
   display.pinModeMCP(touchPadPin2, INPUT);
   display.pinModeMCP(touchPadPin3, INPUT);
@@ -722,9 +730,8 @@ void setup() {
   display.setIntPin(touchPadPin2, RISING);
   display.setIntPin(touchPadPin3, RISING);
   
-  
   rtc_gpio_isolate(GPIO_NUM_12);                                       //Isolate/disable GPIO12 on ESP32 (only to reduce power consumption in sleep)
-  if (display.readBattery() < 3.01) {   // nominal discharge cut-off voltage is 3.0V
+  if (correctedBattery < 3.01) {   // nominal discharge cut-off voltage is 3.0V
     error("Batterie alle!");
     secondsTillWakeUp = 14 * 24 * 60 * 60;         //Sleep for 2 weeks to avoid deep discharge
   }  
