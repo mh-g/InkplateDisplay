@@ -14,17 +14,19 @@
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BME280.h>
 
-#include "Fonts/FreeSans24pt7b.h"
-#include "Fonts/FreeSans18pt7b.h"
-#include "Fonts/FreeSans12pt7b.h"
-#include "Fonts/FreeSans9pt7b.h"
+#include <Fonts/FreeSans24pt7b.h>
+#include <Fonts/FreeSans18pt7b.h>
+#include <Fonts/FreeSans12pt7b.h>
+#include <Fonts/FreeSans9pt7b.h>
 
 #define MONOCHROME
 
 #ifdef MONOCHROME
-Inkplate display(INKPLATE_1BIT);    //Create an object on Inkplate library and also set library into 1 Bit mode (Monochrome)
+Inkplate display(INKPLATE_1BIT);    //Create an object on Inkplate library and also set library into 1 Bit mode (monochrome)
+bool monochromeMode = true;
 #else
-Inkplate display(INKPLATE_3BIT);    //Create an object on Inkplate library and also set library into 1 Bit mode (Monochrome)
+Inkplate display(INKPLATE_3BIT);    //Create an object on Inkplate library and also set library into 3 Bit mode (grayscale)
+bool monochromeMode = false;
 #endif
 
 int lineWidth = 2;
@@ -63,6 +65,15 @@ RTC_DATA_ATTR Power consumption;
 RTC_DATA_ATTR char station[5][64];
 RTC_DATA_ATTR char motd[2][256];
 RTC_DATA_ATTR unsigned long menuLevel;
+RTC_DATA_ATTR char sun[3][6]; // 2x "HH:MM"
+struct Extreme {
+  char value[8];
+  char modTime[13];
+};
+RTC_DATA_ATTR Extreme extremeTemperature[2];
+RTC_DATA_ATTR Extreme extremePressure[2];
+RTC_DATA_ATTR char pressureRate[25];
+
 double correctedBattery;
 
 WiFiClient espClient;
@@ -240,7 +251,6 @@ void showEnv (int aWhich)
   where += env.modTime + String(")");
 
   printAt (width * aWhich, offsetY + 5, &FreeSans12pt7b, where.c_str(), 1, CenterAlign, width);
-  
   printAt (width * aWhich + offsetX, height + offsetY, &FreeSans24pt7b, env.temperature, 2, RightAlign);
   printAt (width * aWhich + offsetX + gapX, height + offsetY + 18, &FreeSans18pt7b, " C", 2);
   printAt (width * aWhich + offsetX + gapX, height + offsetY + 18, &FreeSans9pt7b, "o", 2);
@@ -256,6 +266,51 @@ void showEnv (int aWhich)
   
   drawLine((aWhich + 1) * width, offsetY, (aWhich + 1) * width, offsetY + 283, lineWidth);
   drawLine(aWhich * width, offsetY + 283, (aWhich + 1) * width, offsetY + 283, lineWidth);
+}
+
+void showSunAndExtremes ()
+{
+  int width = 267;
+  int height = 50;
+  int offsetX = 187;
+  int gapX = 10;
+  int offsetY = 180;
+  int spacing = 33;
+  int line = 0;
+  char buffer[64];
+
+  snprintf (buffer, sizeof(buffer), "Sonne:");
+  printAt (width, offsetY + 5 + line++ * spacing, &FreeSans12pt7b, buffer, 1, CenterAlign, width);
+  
+  snprintf (buffer, sizeof(buffer), "%s Aufgang", sun[0]);
+  printAt (width, offsetY + 5 + line++ * spacing, &FreeSans12pt7b, buffer, 1, CenterAlign, width);
+  
+  snprintf (buffer, sizeof(buffer), "%s Untergang", sun[2]);
+  printAt (width, offsetY + 5 + line++ * spacing, &FreeSans12pt7b, buffer, 1, CenterAlign, width);
+
+  snprintf (buffer, sizeof(buffer), "Temperatur");
+  printAt (width, offsetY + 5 + line++ * spacing, &FreeSans12pt7b, buffer, 1, CenterAlign, width);
+
+  snprintf (buffer, sizeof(buffer), "Tief um %s: %s C", extremeTemperature[0].modTime, extremeTemperature[0].value);
+  printAt (width, offsetY + 5 + line++ * spacing, &FreeSans12pt7b, buffer, 1, CenterAlign, width);
+
+  snprintf (buffer, sizeof(buffer), "Hoch um %s: %s C", extremeTemperature[1].modTime, extremeTemperature[1].value);
+  printAt (width, offsetY + 5 + line++ * spacing, &FreeSans12pt7b, buffer, 1, CenterAlign, width);
+
+  snprintf (buffer, sizeof(buffer), "Luftdruck:");
+  printAt (width, offsetY + 5 + line++ * spacing, &FreeSans12pt7b, buffer, 1, CenterAlign, width);
+
+  printAt (width, offsetY + 5 + line++ * spacing, &FreeSans12pt7b, pressureRate, 1, CenterAlign, width);
+/*
+  snprintf (buffer, sizeof(buffer), "Tief um %s: %s hPa", extremePressure[0].modTime, extremePressure[0].value);
+  printAt (width, offsetY + 5 + line++ * spacing, &FreeSans12pt7b, buffer, 1, CenterAlign, width);
+
+  snprintf (buffer, sizeof(buffer), "Hoch um %s: %s hPa", extremePressure[1].modTime, extremePressure[1].value);
+  printAt (width, offsetY + 5 + line++ * spacing, &FreeSans12pt7b, buffer, 1, CenterAlign, width);
+*/
+
+  drawLine(2 * width, offsetY, 2 * width, offsetY + 283, lineWidth);
+  drawLine(width, offsetY + 283, 2 * width, offsetY + 283, lineWidth);
 }
 
 void showPower ()
@@ -427,6 +482,32 @@ void handleEnv (int aWhich, char* aTitle, const String& aPayload)
   else if (aWhich == 1) indoor = env;
 }
 
+void handleExtreme (int aWhich, const String& aPayload) // aWhich == 0: lowest; ==1: highest
+{
+  String parsed[5];
+  int parts = splitPayload (aPayload, parsed);
+  // lowest = f"{minTempTime.strftime('%H:%M')[:5]}@{minTemperature:.1f}@{minPressTime.strftime('%H:%M')[:5]}@{minPressure:4.0f}@???"
+  strncpy (extremeTemperature[aWhich].modTime, parsed[0].c_str(), sizeof (extremeTemperature[aWhich].modTime));
+  strncpy (extremeTemperature[aWhich].value, parsed[1].c_str(), sizeof (extremeTemperature[aWhich].value));
+  strncpy (extremePressure[aWhich].modTime, parsed[2].c_str(), sizeof (extremePressure[aWhich].modTime));
+  strncpy (extremePressure[aWhich].value, parsed[3].c_str(), sizeof (extremePressure[aWhich].value));
+}
+
+void handleSun (const String& aPayload)
+{
+  String parsed[5];
+  int parts = splitPayload (aPayload, parsed);
+  // sunTimes = f"{times.sunrise()[:5]}@{times.solarnoon()[:5]}@{times.sunset()[:5]}@--:--@--:--"
+  for (int i = 0; i < 3; ++i) {
+    strncpy (sun[i], parsed[i].c_str(), sizeof(sun[i]));
+  }
+}
+
+void handlePressureRate (const String& aPayload)
+{
+  strncpy (pressureRate, aPayload.c_str(), sizeof(pressureRate));
+}
+
 void handlePower (const String& aPayload)
 {
   String parsed[5];
@@ -483,6 +564,18 @@ void mqttCallback (char* aTopic, byte* aPayload, unsigned int aLength)
   }
   if (strcmp (aTopic, "/inkplate/in/outdoor") == 0) {
     handleEnv (0, "Aussen", payload);
+  }
+  if (strcmp (aTopic, "/inkplate/in/lowest") == 0) {
+    handleExtreme (0, payload);
+  }
+  if (strcmp (aTopic, "/inkplate/in/highest") == 0) {
+    handleExtreme (1, payload);
+  }
+  if (strcmp (aTopic, "/inkplate/in/suntimes") == 0) {
+    handleSun (payload);
+  }
+  if (strcmp (aTopic, "/inkplate/in/pressrate") == 0) {
+    handlePressureRate (payload);
   }
   if (strcmp (aTopic, "/inkplate/in/power") == 0) {
     handlePower (payload);
@@ -571,6 +664,11 @@ void setup() {
         
         strftime(charBuf, sizeof(charBuf), "%d.%m. %H:%M", getTime());
         strncpy (indoor.modTime, charBuf, sizeof (indoor.modTime));
+      } else {
+        strncpy (indoor.temperature, "...", sizeof (indoor.temperature));
+        strncpy (indoor.pressure, "...", sizeof (indoor.pressure));
+        strncpy (indoor.humidity, "...", sizeof (indoor.humidity));
+        strncpy (indoor.modTime, "...", sizeof (indoor.modTime));
       }
     } else if ((!firstStart) && (buttons == 5)) {   // easter egg
       printSmiley (400, 380, 120, Smile, 3);
@@ -602,13 +700,16 @@ void setup() {
         //Connect to the WiFi network.
         WiFi.mode(WIFI_MODE_STA);
         WiFi.begin(ssid, password);
-        int maxTries = 10;
+Serial.print ("WLAN: "); Serial.print (ssid); Serial.print (" "); // Serial.println (password);
+        int maxTries = 100;
         while ((WiFi.status() != WL_CONNECTED) && (maxTries > 0)) {
           delay(500);
           --maxTries;
+Serial.print (".");
         }
 
         if (WiFi.status() == WL_CONNECTED) {   // successful connection
+Serial.println ("connected");
           statusWLAN = true;
 
           if (menuLevel != 0) {
@@ -639,7 +740,7 @@ void setup() {
             Serial.print ("showMenuIcons: "); Serial.println (success ? "OK" : "NOK");
             if (success) hideNormalContent = true;
           }
-
+Serial.println("MQTT");
           client.setServer(MQTT_BROKER, 1883);
           client.setCallback(mqttCallback);
           client.setBufferSize(1024);
@@ -649,6 +750,7 @@ void setup() {
             if ((!client.connect("InkplateClient")) && (maxTries > 0)) {
               delay(500);
               --maxTries;
+Serial.print (".");
             }
           }
 
@@ -684,12 +786,13 @@ void setup() {
               itoa(menuLevel, charBuf, 10);
               client.publish ("/inkplate/out/menulevel", charBuf);
             }
-
-            maxTries = 40;
+Serial.println("Waiting for data");
+            maxTries = 80;
             while (maxTries > 0) {
               client.loop();
               delay(50);
               --maxTries;
+Serial.print (".");
             }
           }   // MQTT OK
         }   // WLAN OK
@@ -701,14 +804,14 @@ void setup() {
     updateClock();
     if (!hideNormalContent) {
       showEnv(0);
-      showEnv(1);
+      showSunAndExtremes();
       showPower();
       showStation();
       showMOTD();
       showDefaultMenuIcons();
     }
 
-    if (cyclesTillFullUpdate == 0) {
+    if ((!monochromeMode) || (cyclesTillFullUpdate == 0)) {
       display.display();   // update display
       cyclesTillFullUpdate = 20;
     } else {
@@ -731,10 +834,10 @@ void setup() {
   display.setIntPin(touchPadPin3, RISING);
   
   rtc_gpio_isolate(GPIO_NUM_12);                                       //Isolate/disable GPIO12 on ESP32 (only to reduce power consumption in sleep)
-  if (correctedBattery < 3.01) {   // nominal discharge cut-off voltage is 3.0V
-    error("Batterie alle!");
-    secondsTillWakeUp = 14 * 24 * 60 * 60;         //Sleep for 2 weeks to avoid deep discharge
-  }  
+//  if (correctedBattery < 3.01) {   // nominal discharge cut-off voltage is 3.0V
+//    error("Batterie alle!");
+//    secondsTillWakeUp = 14 * 24 * 60 * 60;         //Sleep for 2 weeks to avoid deep discharge
+//  }  
   Serial.print ("=== Sleeping for ");
   Serial.println (secondsTillWakeUp);
   esp_sleep_enable_ext0_wakeup(GPIO_NUM_34, 1);  // wake up from pads (via GPIO34)
