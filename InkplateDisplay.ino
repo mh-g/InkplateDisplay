@@ -1,8 +1,3 @@
-#include <Adafruit_MCP23017.h>
-#include <Adafruit_SPITFT_Macros.h>
-#include <Adafruit_SPITFT.h>
-#include <Adafruit_GFX.h>
-#include <gfxfont.h>
 #include <Inkplate.h>
 
 #include "driver/rtc_io.h"                          //ESP32 library used for deep sleep and RTC wake up pins
@@ -14,10 +9,10 @@
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BME280.h>
 
-#include <Fonts/FreeSans24pt7b.h>
-#include <Fonts/FreeSans18pt7b.h>
-#include <Fonts/FreeSans12pt7b.h>
-#include <Fonts/FreeSans9pt7b.h>
+#include <../Fonts/FreeSans24pt7b.h>
+#include <../Fonts/FreeSans18pt7b.h>
+#include <../Fonts/FreeSans12pt7b.h>
+#include <../Fonts/FreeSans9pt7b.h>
 
 #define MONOCHROME
 
@@ -91,6 +86,10 @@ Adafruit_BME280 bme; // use I2C interface
 Adafruit_Sensor *bme_temp = bme.getTemperatureSensor();
 Adafruit_Sensor *bme_pressure = bme.getPressureSensor();
 Adafruit_Sensor *bme_humidity = bme.getHumiditySensor();
+
+byte touchPadPin1 = PAD1;
+byte touchPadPin2 = PAD2;
+byte touchPadPin3 = PAD3;
 
 void error (const char* aMessage)
 {
@@ -598,6 +597,7 @@ void mqttCallback (char* aTopic, byte* aPayload, unsigned int aLength)
     time_t timeToSet = mktime (&newTime);
     struct timeval now = { .tv_sec = timeToSet };
     settimeofday(&now, NULL);
+Serial.print("got time: "); Serial.println(payload);
   }
 }
 
@@ -616,7 +616,7 @@ int getButtons() {
 }
 
 void setup() {
-  Serial.begin(2000000);
+  Serial.begin(115200); // 2000000);
   display.begin();        // Init Inkplate library (you should call this function ONLY ONCE AT THE BEGINNING!)
   int buttons = getButtons();
   double secondsTillWakeUp = clockUpdateInSeconds - 1.6;
@@ -644,7 +644,7 @@ void setup() {
     if ((!firstStart) && (buttons == 0) && (cyclesTillDataUpdate != 0))   // wake-up reason was clock update
     {
       --cyclesTillDataUpdate;
-      if (cyclesTillDataUpdate < 0) cyclesTillDataUpdate = 0;
+      if (cyclesTillDataUpdate < 0) cyclesTillDataUpdate = dataUpdateInClockUpdates;
       updateStatus(false, false, 0);
       menuLevel /= 10;
       newMenuLevel = true;
@@ -822,16 +822,14 @@ Serial.print (".");
       delay (50);
     }
 
-  #define touchPadPin1 10
-  #define touchPadPin2 11
-  #define touchPadPin3 12
-  display.pinModeMCP(touchPadPin1, INPUT);
-  display.pinModeMCP(touchPadPin2, INPUT);
-  display.pinModeMCP(touchPadPin3, INPUT);
-  display.setIntOutput(1, true, true, HIGH);
-  display.setIntPin(touchPadPin1, RISING);
-  display.setIntPin(touchPadPin2, RISING);
-  display.setIntPin(touchPadPin3, RISING);
+    // Setup mcp interrupts
+    display.pinModeInternal(MCP23017_INT_ADDR, display.mcpRegsInt, touchPadPin1, INPUT);
+    display.pinModeInternal(MCP23017_INT_ADDR, display.mcpRegsInt, touchPadPin2, INPUT);
+    display.pinModeInternal(MCP23017_INT_ADDR, display.mcpRegsInt, touchPadPin3, INPUT);
+    display.setIntOutput(1, false, false, HIGH);
+    display.setIntPin(touchPadPin1, RISING);
+    display.setIntPin(touchPadPin2, RISING);
+    display.setIntPin(touchPadPin3, RISING);
   
   rtc_gpio_isolate(GPIO_NUM_12);                                       //Isolate/disable GPIO12 on ESP32 (only to reduce power consumption in sleep)
 //  if (correctedBattery < 3.01) {   // nominal discharge cut-off voltage is 3.0V
